@@ -5,9 +5,84 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = "~=3.10.0"
 dependencies = [
-    "jax[cuda12-pip]",
+    # Local editable packages in this repository
+    "serl-launcher",
+    "serl-robot-infra",
+
+    # JAX: follows HIL-SERL README CUDA12 install
+    "jax[cuda12]",
+
+    # Core numerical / RL stack from serl_launcher/requirements.txt
+    "numpy==1.26.4",
+    "scipy",
+    "gym",
+    "gymnasium",
+    "flax",
+    "distrax",
+    "ml-collections",
+    "tqdm",
+    "chex",
+    "optax",
+    "absl-py",
+    "einops",
+    "imageio[ffmpeg]",
+    "moviepy",
+    "pre-commit",
+    "pynput",
+    "natsort",
+    "matplotlib",
+    "wandb",
+
+    # TensorFlow Probability: TFP 0.25 is tested against TF 2.18 and JAX 0.4.35
+    "tensorflow",
+    "tensorflow-probability",
+    "tf-keras",
+
+    # serl_launcher/setup.py
+    "pyzmq",
+    "typing",
+    "typing-extensions",
+    "opencv-python",
+    "lz4",
+    "agentlace@git+https://github.com/youliangtan/agentlace@cf2c337",
+
+    # serl_robot_infra/setup.py
+    "pyrealsense2",
+    "pymodbus",
+    "pyquaternion",
+    "pyspacemouse",
+    "hidapi",
+    "pyyaml",
+    "rospkg",
+    "requests",
+    "flask",
+    "defusedxml",
+
+    "panda-python",
+    "pyspacemouse",
+
+    "torch==2.2.0",
+    "torchvision==0.17.0",
+    "torchaudio==2.2.0",
 ]
 
 [[tool.uv.index]]
+name = "pypi"
 url = "https://mirrors.ustc.edu.cn/pypi/simple"
 default = true
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://mirrors.nju.edu.cn/pytorch/whl/cu121"
+explicit = true
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu121", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+  { index = "pytorch-cu121", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchaudio = [
+  { index = "pytorch-cu121", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+serl-launcher = { path = "./serl_launcher", editable = true }
+serl-robot-infra = { path = "./serl_robot_infra", editable = true }
