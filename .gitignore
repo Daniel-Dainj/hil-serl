@@ -9,4 +9,11 @@ wheels/
 # Virtual environments
 .venv
 
+logs
 uv.lock
+
+classifier_ckpt
+classifier_data
+classifier_video
+demo_data
+rlpd_run
