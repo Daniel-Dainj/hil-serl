@@ -4,11 +4,13 @@ In a screen run `python franka_server.py`
 """
 from flask import Flask, request, jsonify
 import numpy as np
+import os
 import rospy
 import time
 import subprocess
 from scipy.spatial.transform import Rotation as R
 from absl import app, flags
+from xmlrpc.client import ServerProxy
 
 from franka_msgs.msg import ErrorRecoveryActionGoal, FrankaState
 from franka_msgs.srv import SetLoad
@@ -47,6 +49,13 @@ class FrankaServer:
         self.ros_pkg_name = ros_pkg_name
         self.reset_joint_target = reset_joint_target
         self.gripper_type = gripper_type
+        self.pos = None
+        self.dq = None
+        self.q = None
+        self.force = None
+        self.torque = None
+        self.vel = np.zeros(6)
+        self.jacobian = None
 
         self.eepub = rospy.Publisher(
             "/cartesian_impedance_controller/equilibrium_pose",
@@ -175,8 +184,47 @@ class FrankaServer:
         jacobian = np.array(list(msg.zero_jacobian)).reshape((6, 7), order="F")
         self.jacobian = jacobian
 
+    def has_state(self) -> bool:
+        return self.pos is not None and self.q is not None and self.dq is not None
+
+    def has_jacobian(self) -> bool:
+        return self.jacobian is not None
+
 
 ###############################################################################
+
+
+def _ros_master_uri(ros_port: str) -> str:
+    return f"http://localhost:{ros_port}"
+
+
+def _is_ros_master_online(ros_master_uri: str) -> bool:
+    try:
+        ServerProxy(ros_master_uri).getPid("/franka_control_api")
+        return True
+    except Exception:
+        return False
+
+
+def _ensure_ros_master(ros_port: str):
+    ros_master_uri = _ros_master_uri(ros_port)
+    os.environ["ROS_MASTER_URI"] = ros_master_uri
+
+    if _is_ros_master_online(ros_master_uri):
+        print(f"Reusing existing ROS master at {ros_master_uri}")
+        return None
+
+    roscore = subprocess.Popen(["roscore", "-p", ros_port])
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if _is_ros_master_online(ros_master_uri):
+            print(f"Started ROS master at {ros_master_uri}")
+            return roscore
+        if roscore.poll() is not None:
+            break
+        time.sleep(0.5)
+
+    raise RuntimeError(f"Failed to start ROS master at {ros_master_uri}")
 
 
 def main(_):
@@ -189,11 +237,7 @@ def main(_):
 
     webapp = Flask(__name__)
 
-    try:
-        roscore = subprocess.Popen(f"roscore -p {FLAGS.ros_port}", shell=True)
-        time.sleep(1)
-    except Exception as e:
-        raise Exception("roscore not running", e)
+    _ensure_ros_master(FLAGS.ros_port)
 
     # Start ros node
     rospy.init_node("franka_control_api")
@@ -220,12 +264,53 @@ def main(_):
     )
     robot_server.start_impedance()
 
-    reconf_client = ReconfClient(
-        "cartesian_impedance_controllerdynamic_reconfigure_compliance_param_node"
-    )
+    try:
+        reconf_client = ReconfClient(
+            "cartesian_impedance_controllerdynamic_reconfigure_compliance_param_node",
+            timeout=15,
+        )
+    except rospy.ROSException as exc:
+        raise RuntimeError(
+            "Timed out waiting for the impedance controller dynamic_reconfigure "
+            "server. Check the robot setup from serl_robot_infra/README.md and "
+            "docs/franka_walkthrough.md: power on the robot, unlock it, enable "
+            "FCI in Franka Desk, and put FR3 into execution mode before "
+            "starting franka_server.py."
+        ) from exc
 
-    rospy.wait_for_service('/franka_control/set_load')
+    try:
+        rospy.wait_for_service("/franka_control/set_load", timeout=15)
+    except rospy.ROSException as exc:
+        raise RuntimeError(
+            "Timed out waiting for /franka_control/set_load. "
+            "Check the robot setup from serl_robot_infra/README.md and "
+            "docs/franka_walkthrough.md: power on the robot, unlock it, "
+            "enable FCI in Franka Desk, and put FR3 into execution mode "
+            "before starting franka_server.py."
+        ) from exc
     set_load_service = rospy.ServiceProxy('/franka_control/set_load', SetLoad)
+
+    def state_not_ready_response():
+        return (
+            jsonify(
+                {
+                    "error": "Robot state is not ready yet. "
+                    "Wait a moment for franka_state_controller to publish.",
+                }
+            ),
+            503,
+        )
+
+    def jacobian_not_ready_response():
+        return (
+            jsonify(
+                {
+                    "error": "Robot Jacobian is not ready yet. "
+                    "Wait a moment for cartesian_impedance_controller to publish.",
+                }
+            ),
+            503,
+        )
 
 
     # Route for Setting Load
@@ -255,6 +340,8 @@ def main(_):
     # Route for pose in euler angles
     @webapp.route("/getpos_euler", methods=["POST"])
     def get_pose_euler():
+        if not robot_server.has_state():
+            return state_not_ready_response()
         xyz = robot_server.pos[:3]
         r = R.from_quat(robot_server.pos[3:]).as_euler("xyz")
         return jsonify({"pose": np.concatenate([xyz, r]).tolist()})
@@ -262,30 +349,44 @@ def main(_):
     # Route for Getting Pose
     @webapp.route("/getpos", methods=["POST"])
     def get_pos():
+        if not robot_server.has_state():
+            return state_not_ready_response()
         return jsonify({"pose": np.array(robot_server.pos).tolist()})
 
     @webapp.route("/getvel", methods=["POST"])
     def get_vel():
+        if not robot_server.has_state():
+            return state_not_ready_response()
         return jsonify({"vel": np.array(robot_server.vel).tolist()})
 
     @webapp.route("/getforce", methods=["POST"])
     def get_force():
+        if not robot_server.has_state():
+            return state_not_ready_response()
         return jsonify({"force": np.array(robot_server.force).tolist()})
 
     @webapp.route("/gettorque", methods=["POST"])
     def get_torque():
+        if not robot_server.has_state():
+            return state_not_ready_response()
         return jsonify({"torque": np.array(robot_server.torque).tolist()})
 
     @webapp.route("/getq", methods=["POST"])
     def get_q():
+        if not robot_server.has_state():
+            return state_not_ready_response()
         return jsonify({"q": np.array(robot_server.q).tolist()})
 
     @webapp.route("/getdq", methods=["POST"])
     def get_dq():
+        if not robot_server.has_state():
+            return state_not_ready_response()
         return jsonify({"dq": np.array(robot_server.dq).tolist()})
 
     @webapp.route("/getjacobian", methods=["POST"])
     def get_jacobian():
+        if not robot_server.has_jacobian():
+            return jacobian_not_ready_response()
         return jsonify({"jacobian": np.array(robot_server.jacobian).tolist()})
 
     # Route for getting gripper distance
@@ -361,6 +462,8 @@ def main(_):
     # Route for getting all state information
     @webapp.route("/getstate", methods=["POST"])
     def get_state():
+        if not robot_server.has_state():
+            return state_not_ready_response()
         return jsonify(
             {
                 "pose": np.array(robot_server.pos).tolist(),
@@ -371,6 +474,16 @@ def main(_):
                 "dq": np.array(robot_server.dq).tolist(),
                 "jacobian": np.array(robot_server.jacobian).tolist(),
                 "gripper_pos": gripper_server.gripper_pos,
+            }
+        )
+
+    @webapp.route("/healthz", methods=["GET", "POST"])
+    def healthz():
+        return jsonify(
+            {
+                "ok": True,
+                "state_ready": robot_server.has_state(),
+                "jacobian_ready": robot_server.has_jacobian(),
             }
         )
 

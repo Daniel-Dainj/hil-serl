@@ -15,18 +15,16 @@ from serl_launcher.wrappers.chunking import ChunkingWrapper
 from serl_launcher.networks.reward_classifier import load_classifier_func
 
 from experiments.config import DefaultTrainingConfig
-from experiments.usb_pickup_insertion.wrapper import USBEnv, GripperPenaltyWrapper
+from experiments.workpiece_pickup.wrapper import (
+    GripperPenaltyWrapper,
+    WorkpiecePickupEnv,
+)
 
 
 class EnvConfig(DefaultEnvConfig):
     SERVER_URL: str = "http://localhost:5000/"
     REALSENSE_CAMERAS = {
-        "wrist_1": {
-            "serial_number": "335122272207",
-            "dim": (1280, 720),
-            "exposure": 10500,
-        },
-        "wrist_2": {
+        "wrist": {
             "serial_number": "335122272207",
             "dim": (1280, 720),
             "exposure": 10500,
@@ -43,13 +41,24 @@ class EnvConfig(DefaultEnvConfig):
         },
     }
     IMAGE_CROP = {
-        "wrist_1": lambda img: img[50:-200, 200:-200],
-        "wrist_2": lambda img: img[:-200, 200:-200],
-        "side_policy": lambda img: img[250:500, 350:650],
-        "side_classifier": lambda img: img[270:398, 500:628],
+        "wrist": lambda img: img[:, :],
+        "side_policy": lambda img: img[360:560, 450:900],
+        "side_classifier": lambda img: img[360:560, 450:900],
     }
-    TARGET_POSE = np.array([0.553, 0.1769683108549487, 0.25097833796596336, np.pi, 0, -np.pi / 2])
-    RESET_POSE = TARGET_POSE + np.array([0, 0.03, 0.05, 0, 0, 0])
+
+    RESET_POSE = np.array(
+        [
+            0.47962504594521777,
+            -0.1606138124342781,
+            0.2281441556971433,
+            -3.0802704821179843,
+            -0.04013589859939137,
+            -0.06952010716295809,
+        ]
+    )
+
+    TARGET_POSE = RESET_POSE - np.array([0, 0, 0.1, 0, 0, 0])
+
     ACTION_SCALE = np.array([0.015, 0.1, 1])
     RANDOM_RESET = True
     DISPLAY_IMAGE = True
@@ -101,7 +110,7 @@ class EnvConfig(DefaultEnvConfig):
 
 
 class TrainConfig(DefaultTrainingConfig):
-    image_keys = ["side_policy", "wrist_1", "wrist_2"]
+    image_keys = ["side_policy", "wrist"]
     classifier_keys = ["side_classifier"]
     proprio_keys = ["tcp_pose", "tcp_vel", "tcp_force", "tcp_torque", "gripper_pose"]
     checkpoint_period = 2000
@@ -113,7 +122,11 @@ class TrainConfig(DefaultTrainingConfig):
     setup_mode = "single-arm-learned-gripper"
 
     def get_environment(self, fake_env=False, save_video=False, classifier=False):
-        env = USBEnv(fake_env=fake_env, save_video=save_video, config=EnvConfig())
+        env = WorkpiecePickupEnv(
+            fake_env=fake_env,
+            save_video=save_video,
+            config=EnvConfig(),
+        )
         if not fake_env:
             env = SpacemouseIntervention(env)
         env = RelativeFrame(env)
