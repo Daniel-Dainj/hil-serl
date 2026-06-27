@@ -1,7 +1,10 @@
 """ Test the spacemouse output. """
 import time
 import numpy as np
-from franka_env.spacemouse.spacemouse_expert import SpaceMouseExpert
+from franka_env.spacemouse.spacemouse_expert import (
+    SpaceMouseExpert,
+    normalize_button_state,
+)
 
 
 def test_spacemouse():
@@ -16,7 +19,11 @@ def test_spacemouse():
     with np.printoptions(precision=3, suppress=True):
         while True:
             action, buttons = spacemouse0.get_action()
-            print(f"Spacemouse action: {action}, buttons: {buttons}")
+            logical_buttons = normalize_button_state(buttons, expected_buttons=2)
+            print(
+                "Spacemouse action:"
+                f" {action}, raw buttons: {buttons}, logical buttons: {logical_buttons}"
+            )
             time.sleep(0.1)
 
 

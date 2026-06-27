@@ -31,12 +31,41 @@ class ImageDisplayer(threading.Thread):
             if img_array is None:  # None is our signal to exit
                 break
 
-            frame = np.concatenate(
-                [cv2.resize(v, (128, 128)) for k, v in img_array.items() if "full" not in k], axis=1
-            )
+            tiles = [self._build_tile(label, image) for label, image in img_array.items()]
+            if not tiles:
+                continue
+
+            columns = min(3, len(tiles))
+            rows = []
+            for start in range(0, len(tiles), columns):
+                row_tiles = tiles[start : start + columns]
+                while len(row_tiles) < columns:
+                    row_tiles.append(np.zeros_like(tiles[0]))
+                rows.append(np.concatenate(row_tiles, axis=1))
+
+            frame = np.concatenate(rows, axis=0)
 
             cv2.imshow(self.name, frame)
             cv2.waitKey(1)
+
+    @staticmethod
+    def _build_tile(label, image, size=(192, 192)):
+        if image.ndim == 2:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+
+        tile = cv2.resize(image, size)
+        cv2.rectangle(tile, (0, 0), (size[0] - 1, 26), (0, 0, 0), thickness=-1)
+        cv2.putText(
+            tile,
+            label,
+            (8, 18),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        return tile
 
 
 ##############################################################################
@@ -103,6 +132,7 @@ class FrankaEnv(gym.Env):
         )
         self._update_currpos()
         self.last_gripper_act = time.time()
+        self.last_gripper_cmd = None
         self.lastsent = time.time()
         self.randomreset = config.RANDOM_RESET
         self.random_xy_range = config.RANDOM_XY_RANGE
@@ -254,18 +284,27 @@ class FrankaEnv(gym.Env):
     def get_im(self) -> Dict[str, np.ndarray]:
         """Get images from the realsense cameras."""
         images = {}
-        display_images = {}
+        display_images = OrderedDict()
         full_res_images = {}  # New dictionary to store full resolution cropped images
+        frame_by_capture = {}
+        previewed_captures = set()
         for key, cap in self.cap.items():
             try:
-                rgb = cap.read()
+                cap_id = id(cap)
+                if cap_id not in frame_by_capture:
+                    frame_by_capture[cap_id] = cap.read()
+                rgb = frame_by_capture[cap_id]
+
+                if cap_id not in previewed_captures:
+                    display_images[f"{key}_raw"] = rgb
+                    previewed_captures.add(cap_id)
+
                 cropped_rgb = self.config.IMAGE_CROP[key](rgb) if key in self.config.IMAGE_CROP else rgb
                 resized = cv2.resize(
                     cropped_rgb, self.observation_space["images"][key].shape[:2][::-1]
                 )
                 images[key] = resized[..., ::-1]
-                display_images[key] = resized
-                display_images[key + "_full"] = cropped_rgb
+                display_images[f"{key}_crop"] = cropped_rgb
                 full_res_images[key] = copy.deepcopy(cropped_rgb)  # Store the full resolution cropped image
             except queue.Empty:
                 input(
@@ -395,18 +434,29 @@ class FrankaEnv(gym.Env):
         if self.cap is not None:  # close cameras if they are already open
             self.close_cameras()
 
+        resolved_cameras = RSCapture.resolve_camera_configs(name_serial_dict)
         self.cap = OrderedDict()
-        for cam_name, kwargs in name_serial_dict.items():
-            cap = VideoCapture(
-                RSCapture(name=cam_name, **kwargs)
-            )
+        capture_by_serial = {}
+        for cam_name, kwargs in resolved_cameras.items():
+            serial_number = kwargs["serial_number"]
+            if serial_number in capture_by_serial:
+                cap = capture_by_serial[serial_number]
+            else:
+                cap = VideoCapture(
+                    RSCapture(name=cam_name, **kwargs)
+                )
+                capture_by_serial[serial_number] = cap
             self.cap[cam_name] = cap
 
     def close_cameras(self):
         """Close both wrist cameras."""
         try:
+            closed = set()
             for cap in self.cap.values():
+                if id(cap) in closed:
+                    continue
                 cap.close()
+                closed.add(id(cap))
         except Exception as e:
             print(f"Failed to close cameras: {e}")
 
@@ -424,16 +474,31 @@ class FrankaEnv(gym.Env):
     def _send_gripper_command(self, pos: float, mode="binary"):
         """Internal function to send gripper command to the robot."""
         if mode == "binary":
-            if (pos <= -0.5) and (self.curr_gripper_pos > 0.85) and (time.time() - self.last_gripper_act > self.gripper_sleep):  # close gripper
-                requests.post(self.url + "close_gripper")
-                self.last_gripper_act = time.time()
-                time.sleep(self.gripper_sleep)
-            elif (pos >= 0.5) and (self.curr_gripper_pos < 0.85) and (time.time() - self.last_gripper_act > self.gripper_sleep):  # open gripper
-                requests.post(self.url + "open_gripper")
-                self.last_gripper_act = time.time()
-                time.sleep(self.gripper_sleep)
-            else: 
+            target_cmd = None
+            sensor_requests_close = self.curr_gripper_pos > 0.85
+            sensor_requests_open = self.curr_gripper_pos < 0.85
+
+            if pos <= -0.5:
+                target_cmd = "close"
+                sensor_says_command_is_needed = sensor_requests_close
+            elif pos >= 0.5:
+                target_cmd = "open"
+                sensor_says_command_is_needed = sensor_requests_open
+            else:
                 return
+
+            if time.time() - self.last_gripper_act <= self.gripper_sleep:
+                return
+
+            # Allow one state-change command through even if gripper telemetry is
+            # stale; after that, rely on the last commanded state to avoid spam.
+            if self.last_gripper_cmd == target_cmd and not sensor_says_command_is_needed:
+                return
+
+            requests.post(self.url + f"{target_cmd}_gripper")
+            self.last_gripper_cmd = target_cmd
+            self.last_gripper_act = time.time()
+            time.sleep(self.gripper_sleep)
         elif mode == "continuous":
             raise NotImplementedError("Continuous gripper control is optional")
 

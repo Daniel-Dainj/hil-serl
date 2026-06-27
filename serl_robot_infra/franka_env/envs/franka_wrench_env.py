@@ -90,6 +90,7 @@ class FrankaWrenchEnv(gym.Env):
         self._update_currpos()
         
         self.last_gripper_act = time.time()
+        self.last_gripper_cmd = None
         self.lastsent = time.time()
         self.randomreset = config.RANDOM_RESET
         self.wait_for_reset = config.WAIT_FOR_RESET
@@ -261,17 +262,29 @@ class FrankaWrenchEnv(gym.Env):
         if self.cap is not None:  # close cameras if they are already open
             self.close_cameras()
 
+        resolved_cameras = RSCapture.resolve_camera_configs(name_serial_dict)
         caps = OrderedDict()
-        for cam_name, kwargs in name_serial_dict.items():
-            caps[cam_name] = RSCapture(name=cam_name, **kwargs)
+        capture_by_serial = {}
+        for cam_name, kwargs in resolved_cameras.items():
+            serial_number = kwargs["serial_number"]
+            if serial_number in capture_by_serial:
+                caps[cam_name] = capture_by_serial[serial_number]
+            else:
+                capture = RSCapture(name=cam_name, **kwargs)
+                capture_by_serial[serial_number] = capture
+                caps[cam_name] = capture
 
         self.cap = MultiVideoCapture(caps)
 
     def close_cameras(self):
         """Close both wrist cameras."""
         try:
+            closed = set()
             for cap in self.cap.values():
+                if id(cap) in closed:
+                    continue
                 cap.close()
+                closed.add(id(cap))
         except Exception as e:
             print(f"Failed to close cameras: {e}")
 
@@ -287,16 +300,31 @@ class FrankaWrenchEnv(gym.Env):
     def _send_gripper_command(self, pos: float, mode="binary"):
         """Internal function to send gripper command to the robot."""
         if mode == "binary":
-            if (pos >= -1) and (pos <= -0.5) and (self.curr_gripper_pos > 0.95) and (time.time() - self.last_gripper_act > self.gripper_sleep):  # close gripper
-                requests.post(self.url + "close_gripper")
-                self.last_gripper_act = time.time()
-                time.sleep(0.6)
-            elif (pos >= 0.5) and (pos <= 1) and (self.curr_gripper_pos < 0.95) and (time.time() - self.last_gripper_act > self.gripper_sleep):  # open gripper
-                requests.post(self.url + "open_gripper")
-                self.last_gripper_act = time.time()
-                time.sleep(0.6)
-            else: 
+            target_cmd = None
+            sensor_requests_close = self.curr_gripper_pos > 0.95
+            sensor_requests_open = self.curr_gripper_pos < 0.95
+
+            if (pos >= -1) and (pos <= -0.5):
+                target_cmd = "close"
+                sensor_says_command_is_needed = sensor_requests_close
+            elif (pos >= 0.5) and (pos <= 1):
+                target_cmd = "open"
+                sensor_says_command_is_needed = sensor_requests_open
+            else:
                 return
+
+            if time.time() - self.last_gripper_act <= self.gripper_sleep:
+                return
+
+            # Allow one state-change command through even if gripper telemetry is
+            # stale; after that, rely on the last commanded state to avoid spam.
+            if self.last_gripper_cmd == target_cmd and not sensor_says_command_is_needed:
+                return
+
+            requests.post(self.url + f"{target_cmd}_gripper")
+            self.last_gripper_cmd = target_cmd
+            self.last_gripper_act = time.time()
+            time.sleep(0.6)
         elif mode == "continuous":
             raise NotImplementedError("Continuous gripper control is optional")
 

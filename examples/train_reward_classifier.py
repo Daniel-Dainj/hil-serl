@@ -1,10 +1,14 @@
 import glob
 import os
 import pickle as pkl
+
 import jax
 from jax import numpy as jnp
+from serl_launcher.utils.jax_compat import apply_flax_compat_shims
+
+apply_flax_compat_shims()
+
 import flax.linen as nn
-from flax.training import checkpoints
 import numpy as np
 import optax
 from tqdm import tqdm
@@ -13,7 +17,10 @@ from absl import app, flags
 from serl_launcher.data.data_store import ReplayBuffer
 from serl_launcher.utils.train_utils import concat_batches
 from serl_launcher.vision.data_augmentations import batched_random_crop
-from serl_launcher.networks.reward_classifier import create_classifier
+from serl_launcher.networks.reward_classifier import (
+    create_classifier,
+    save_classifier_checkpoint,
+)
 
 from experiments.mappings import CONFIG_MAPPING
 
@@ -150,11 +157,9 @@ def main(_):
             f"Epoch: {epoch+1}, Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}"
         )
 
-    checkpoints.save_checkpoint(
+    save_classifier_checkpoint(
         os.path.join(os.getcwd(), "classifier_ckpt/"),
         classifier,
-        step=FLAGS.num_epochs,
-        overwrite=True,
     )
     
 

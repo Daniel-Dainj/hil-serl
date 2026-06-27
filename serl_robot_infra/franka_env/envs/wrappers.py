@@ -4,7 +4,10 @@ import gymnasium as gym
 import numpy as np
 from gymnasium.spaces import Box
 import copy
-from franka_env.spacemouse.spacemouse_expert import SpaceMouseExpert
+from franka_env.spacemouse.spacemouse_expert import (
+    SpaceMouseExpert,
+    normalize_button_state,
+)
 import requests
 from scipy.spatial.transform import Rotation as R
 from franka_env.envs.franka_env import FrankaEnv
@@ -39,10 +42,21 @@ class MultiCameraBinaryRewardClassifierWrapper(gym.Wrapper):
     which is not part of the observation space
     """
 
-    def __init__(self, env: Env, reward_classifier_func, target_hz = None):
+    def __init__(
+        self,
+        env: Env,
+        reward_classifier_func,
+        target_hz=None,
+        min_episode_steps=0,
+        success_streak_needed=1,
+    ):
         super().__init__(env)
         self.reward_classifier_func = reward_classifier_func
         self.target_hz = target_hz
+        self.min_episode_steps = min_episode_steps
+        self.success_streak_needed = success_streak_needed
+        self._episode_steps = 0
+        self._success_streak = 0
 
     def compute_reward(self, obs):
         if self.reward_classifier_func is not None:
@@ -51,9 +65,27 @@ class MultiCameraBinaryRewardClassifierWrapper(gym.Wrapper):
 
     def step(self, action):
         start_time = time.time()
-        obs, rew, done, truncated, info = self.env.step(action)
-        rew = self.compute_reward(obs)
-        done = done or rew
+        obs, env_rew, env_done, truncated, info = self.env.step(action)
+        self._episode_steps += 1
+        raw_classifier_rew = int(bool(self.compute_reward(obs)))
+        if raw_classifier_rew:
+            self._success_streak += 1
+        else:
+            self._success_streak = 0
+
+        classifier_rew = int(
+            raw_classifier_rew
+            and self._episode_steps >= self.min_episode_steps
+            and self._success_streak >= self.success_streak_needed
+        )
+        rew = classifier_rew
+        done = env_done or rew
+        info['env_reward'] = env_rew
+        info['env_done'] = bool(env_done)
+        info['raw_classifier_reward'] = raw_classifier_rew
+        info['classifier_reward'] = classifier_rew
+        info['success_streak'] = self._success_streak
+        info['episode_steps'] = self._episode_steps
         info['succeed'] = bool(rew)
         if self.target_hz is not None:
             time.sleep(max(0, 1/self.target_hz - (time.time() - start_time)))
@@ -61,6 +93,8 @@ class MultiCameraBinaryRewardClassifierWrapper(gym.Wrapper):
         return obs, rew, done, truncated, info
 
     def reset(self, **kwargs):
+        self._episode_steps = 0
+        self._success_streak = 0
         obs, info = self.env.reset(**kwargs)
         info['succeed'] = False
         return obs, info
@@ -224,7 +258,7 @@ class SpacemouseIntervention(gym.ActionWrapper):
         - action: spacemouse action if nonezero; else, policy action
         """
         expert_a, buttons = self.expert.get_action()
-        self.left, self.right = tuple(buttons)
+        self.left, self.right = normalize_button_state(buttons, expected_buttons=2)
         intervened = False
         
         if np.linalg.norm(expert_a) > 0.001:
@@ -262,6 +296,10 @@ class SpacemouseIntervention(gym.ActionWrapper):
         info["right"] = self.right
         return obs, rew, done, truncated, info
 
+    def close(self):
+        self.expert.close()
+        return super().close()
+
 class DualSpacemouseIntervention(gym.ActionWrapper):
     def __init__(self, env, action_indices=None, gripper_enabled=True):
         super().__init__(env)
@@ -281,7 +319,12 @@ class DualSpacemouseIntervention(gym.ActionWrapper):
         """
         intervened = False
         expert_a, buttons = self.expert.get_action()
-        self.left1, self.left2, self.right1, self.right2 = tuple(buttons)
+        (
+            self.left1,
+            self.left2,
+            self.right1,
+            self.right2,
+        ) = normalize_button_state(buttons, expected_buttons=4)
 
 
         if self.gripper_enabled:
@@ -334,6 +377,10 @@ class DualSpacemouseIntervention(gym.ActionWrapper):
     
     def reset(self, **kwargs):
         return self.env.reset(**kwargs)
+
+    def close(self):
+        self.expert.close()
+        return super().close()
 
 
 class GripperPenaltyWrapper(gym.RewardWrapper):

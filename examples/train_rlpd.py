@@ -11,7 +11,10 @@ from flax.training import checkpoints
 import os
 import copy
 import pickle as pkl
-from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
+try:
+    from gymnasium.wrappers import RecordEpisodeStatistics
+except ImportError:
+    from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
 from natsort import natsorted
 
 from serl_launcher.agents.continuous.sac import SACAgent
@@ -59,6 +62,61 @@ sharding = jax.sharding.PositionalSharding(devices)
 
 def print_green(x):
     return print("\033[92m {}\033[00m".format(x))
+
+
+def latest_rl_checkpoint(checkpoint_path):
+    if not checkpoint_path:
+        return None
+
+    latest = checkpoints.latest_checkpoint(os.path.abspath(checkpoint_path))
+    if latest and os.path.exists(latest):
+        return latest
+    return None
+
+
+def latest_buffer_step(checkpoint_path, buffer_name="buffer"):
+    if not checkpoint_path:
+        return None
+
+    buffer_files = natsorted(glob.glob(os.path.join(checkpoint_path, buffer_name, "*.pkl")))
+    if not buffer_files:
+        return None
+
+    latest_file = os.path.basename(buffer_files[-1])
+    try:
+        return int(latest_file[12:-4])
+    except ValueError:
+        return None
+
+
+def resolve_demo_paths(demo_paths):
+    resolved_paths = []
+    for path in demo_paths or []:
+        if os.path.isdir(path):
+            matches = natsorted(glob.glob(os.path.join(path, "*.pkl")))
+            if not matches:
+                raise FileNotFoundError(f"No demo files found in directory: {path}")
+            resolved_paths.extend(matches)
+            continue
+
+        matches = natsorted(glob.glob(path))
+        if matches:
+            resolved_paths.extend([match for match in matches if os.path.isfile(match)])
+            continue
+
+        if os.path.isfile(path):
+            resolved_paths.append(path)
+            continue
+
+        raise FileNotFoundError(f"Demo path does not exist: {path}")
+
+    deduped_paths = []
+    seen = set()
+    for path in resolved_paths:
+        if path not in seen:
+            deduped_paths.append(path)
+            seen.add(path)
+    return deduped_paths
 
 
 ##############################################################################
@@ -109,11 +167,8 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng):
         print(f"average time: {np.mean(time_list)}")
         return  # after done eval, return and exit
     
-    start_step = (
-        int(os.path.basename(natsorted(glob.glob(os.path.join(FLAGS.checkpoint_path, "buffer/*.pkl")))[-1])[12:-4]) + 1
-        if FLAGS.checkpoint_path and os.path.exists(FLAGS.checkpoint_path)
-        else 0
-    )
+    latest_step = latest_buffer_step(FLAGS.checkpoint_path, "buffer")
+    start_step = latest_step + 1 if latest_step is not None else 0
 
     datastore_dict = {
         "actor_env": data_store,
@@ -246,12 +301,8 @@ def learner(rng, agent, replay_buffer, demo_buffer, wandb_logger=None):
     """
     The learner loop, which runs when "--learner" is set to True.
     """
-    start_step = (
-        int(os.path.basename(checkpoints.latest_checkpoint(os.path.abspath(FLAGS.checkpoint_path)))[11:])
-        + 1
-        if FLAGS.checkpoint_path and os.path.exists(FLAGS.checkpoint_path)
-        else 0
-    )
+    latest_ckpt = latest_rl_checkpoint(FLAGS.checkpoint_path)
+    start_step = int(os.path.basename(latest_ckpt)[11:]) + 1 if latest_ckpt else 0
     step = start_step
 
     def stats_callback(type: str, payload: dict) -> dict:
@@ -413,20 +464,23 @@ def main(_):
     # replicate agent across devices
     # need the jnp.array to avoid a bug where device_put doesn't recognize primitives
     agent = jax.device_put(
-        jax.tree_map(jnp.array, agent), sharding.replicate()
+        jax.tree_util.tree_map(jnp.array, agent), sharding.replicate()
     )
 
-    if FLAGS.checkpoint_path is not None and os.path.exists(FLAGS.checkpoint_path):
+    latest_ckpt = latest_rl_checkpoint(FLAGS.checkpoint_path)
+    if latest_ckpt is not None:
         input("Checkpoint path already exists. Press Enter to resume training.")
         ckpt = checkpoints.restore_checkpoint(
             os.path.abspath(FLAGS.checkpoint_path),
             agent.state,
         )
         agent = agent.replace(state=ckpt)
-        ckpt_number = os.path.basename(
-            checkpoints.latest_checkpoint(os.path.abspath(FLAGS.checkpoint_path))
-        )[11:]
+        ckpt_number = os.path.basename(latest_ckpt)[11:]
         print_green(f"Loaded previous checkpoint at step {ckpt_number}.")
+    elif FLAGS.checkpoint_path is not None and os.path.exists(FLAGS.checkpoint_path):
+        print_green(
+            "Checkpoint directory exists but no RL checkpoints were found. Starting fresh."
+        )
 
     def create_replay_buffer_and_wandb_logger():
         replay_buffer = MemoryEfficientReplayBufferDataStore(
@@ -456,7 +510,9 @@ def main(_):
         )
 
         assert FLAGS.demo_path is not None
-        for path in FLAGS.demo_path:
+        demo_paths = resolve_demo_paths(FLAGS.demo_path)
+        print_green(f"Loading demos from {len(demo_paths)} file(s).")
+        for path in demo_paths:
             with open(path, "rb") as f:
                 transitions = pkl.load(f)
                 for transition in transitions:

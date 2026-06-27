@@ -1,0 +1,29 @@
+预抓取位姿
+dainanjun@OMEN-Laptop:~/codespaces/serl/hil-serl$ curl -X POST http://localhost:5000/getpos # Print current end-effector pose in xyz translation and xyzw quaternions
+{"pose":[0.47962469959404047,-0.16061600261024833,0.22814497577915432,0.9987462294187627,-0.0341192998961276,0.021111839248255094,-0.02993547794771513]}
+dainanjun@OMEN-Laptop:~/codespaces/serl/hil-serl$ curl -X POST http://localhost:5000/getpos_euler # Get current end-effector pose in xyz translation and xyz euler angles
+{"pose":[0.47962504594521777,-0.1606138124342781,0.2281441556971433,-3.0802704821179843,-0.04013589859939137,-0.06952010716295809]}
+
+左上
+dainanjun@OMEN-Laptop:~/codespaces/serl/hil-serl$ curl -X POST http://localhost:5000/getpos # Print current end-effector pose in xyz translation and xyzw quaternions
+{"pose":[0.6494557798218754,0.09862840778854759,0.012888422395033442,0.9998406911220439,-0.0066598737201470646,0.01586298560234512,-0.004754381811027756]}
+dainanjun@OMEN-Laptop:~/codespaces/serl/hil-serl$ curl -X POST http://localhost:5000/getpos_euler # Get current end-effector pose in xyz translation and xyz euler angles
+{"pose":[0.6494556380045357,0.09862776931236972,0.012886787849999328,-3.131872716081603,-0.031661892380567824,-0.01348045435979861]}
+
+右上
+dainanjun@OMEN-Laptop:~/codespaces/serl/hil-serl$ curl -X POST http://localhost:5000/getpos # Print current end-effector pose in xyz translation and xyzw quaternions
+{"pose":[0.6518036916757318,-0.43203588800659815,0.014323306335672671,0.9992485813200739,-0.014504048968225594,0.03391831978060313,0.011893396344520938]}
+dainanjun@OMEN-Laptop:~/codespaces/serl/hil-serl$ curl -X POST http://localhost:5000/getpos_euler # Get current end-effector pose in xyz translation and xyz euler angles
+{"pose":[0.6518050047212561,-0.43203662684481814,0.014325769695033049,3.118749538224919,-0.06818797509610186,-0.028240959744567418]}
+
+右下
+dainanjun@OMEN-Laptop:~/codespaces/serl/hil-serl$ curl -X POST http://localhost:5000/getpos # Print current end-effector pose in xyz translation and xyzw quaternions
+{"pose":[0.4076757559051058,-0.4221984673398182,0.013487345830792863,0.9995843170176683,-0.028038389035206213,0.0031921480049484025,-0.005903567035837695]}
+dainanjun@OMEN-Laptop:~/codespaces/serl/hil-serl$ curl -X POST http://localhost:5000/getpos_euler # Get current end-effector pose in xyz translation and xyz euler angles
+{"pose":[0.40768045517470597,-0.422195432958106,0.013487702199745936,-3.129607240439131,-0.0060569792637195086,-0.0561159870308805]}
+
+左下
+dainanjun@OMEN-Laptop:~/codespaces/serl/hil-serl$ curl -X POST http://localhost:5000/getpos # Print current end-effector pose in xyz translation and xyzw quaternions
+{"pose":[0.41668718594322274,0.06765306085258509,0.010656034763005693,0.9991961837520459,-0.02023461128564343,-0.0289737121926385,-0.018922760983659737]}
+dainanjun@OMEN-Laptop:~/codespaces/serl/hil-serl$ curl -X POST http://localhost:5000/getpos_euler # Get current end-effector pose in xyz translation and xyz euler angles
+{"pose":[0.4166845695158158,0.06765316717931522,0.010654375637197127,-3.104880935052827,0.058705206423846246,-0.03940721561187588]}

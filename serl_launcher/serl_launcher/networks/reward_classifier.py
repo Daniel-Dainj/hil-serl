@@ -1,9 +1,15 @@
 import pickle as pkl
+import math
 import jax
 from jax import numpy as jnp
+from flax import serialization
+
+from serl_launcher.utils.jax_compat import apply_flax_compat_shims
+
+apply_flax_compat_shims()
+
 import flax.linen as nn
 from flax.training.train_state import TrainState
-from flax.training import checkpoints
 import optax
 from typing import Callable, Dict, List
 import requests
@@ -12,6 +18,9 @@ from tqdm import tqdm
 
 from serl_launcher.vision.resnet_v1 import resnetv1_configs, PreTrainedResNetEncoder
 from serl_launcher.common.encoding import EncodingWrapper
+
+
+CLASSIFIER_CHECKPOINT_FILENAME = "classifier.msgpack"
 
 
 class BinaryClassifier(nn.Module):
@@ -145,12 +154,33 @@ def load_classifier_func(
             and returns the logits of the classifier.
     """
     classifier = create_classifier(key, sample, image_keys, n_way=n_way)
-    classifier = checkpoints.restore_checkpoint(
-        checkpoint_path,
-        target=classifier,
-    )
+    classifier = restore_classifier_checkpoint(checkpoint_path, classifier)
     func = lambda obs: classifier.apply_fn(
         {"params": classifier.params}, obs, train=False
     )
     func = jax.jit(func)
     return func
+
+
+def save_classifier_checkpoint(checkpoint_path: str, classifier: TrainState):
+    os.makedirs(checkpoint_path, exist_ok=True)
+    checkpoint_file = os.path.join(checkpoint_path, CLASSIFIER_CHECKPOINT_FILENAME)
+    with open(checkpoint_file, "wb") as f:
+        f.write(serialization.to_bytes(classifier))
+
+
+def restore_classifier_checkpoint(checkpoint_path: str, target: TrainState) -> TrainState:
+    checkpoint_file = os.path.join(checkpoint_path, CLASSIFIER_CHECKPOINT_FILENAME)
+    with open(checkpoint_file, "rb") as f:
+        return serialization.from_bytes(target, f.read())
+
+
+def binary_classifier_probability(classifier_fn: Callable[[Dict], jnp.ndarray], obs: Dict) -> float:
+    """Return a Python float probability from a binary classifier output."""
+    logits = jnp.asarray(classifier_fn(obs))
+    if logits.size != 1:
+        raise ValueError(
+            f"Expected a single binary classifier logit, got shape {tuple(logits.shape)}"
+        )
+    logit = float(jnp.ravel(logits)[0])
+    return 1.0 / (1.0 + math.exp(-logit))
